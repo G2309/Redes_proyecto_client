@@ -93,14 +93,23 @@ end
 
 function send_stream(bot::Claude, user_input::String)
     push!(bot.history, Message("user", user_input, now(), Dict()))
+
+    if isempty(strip(bot.api_key))
+        @error(bot.logger, "Anthropic API key is empty. Set Anthropic_API_key in your .env")
+        return (success=false, error="Missing Anthropic API key")
+    end
+
     payload = Dict(
         "model" => "claude-2.1",
         "messages" => prepare_msgs(bot),
         "max_tokens_to_sample" => 1000
     )
-    headers = ["Content-Type" => "application/json", "x-api-key" => bot.api_key]
+
+    headers = ["content-type" => "application/json", "x-api-key" => bot.api_key]
+
     try
-        r = HTTP.post("https://api.anthropic.com/v1/complete", headers, JSON.json(payload))
+        r = HTTP.post("https://api.anthropic.com/v1/complete"; headers=headers, body=JSON.json(payload))
+
         if r.status == 200
             body = String(r.body)
             parsed = JSON.parse(body)
@@ -108,14 +117,16 @@ function send_stream(bot::Claude, user_input::String)
             push!(bot.history, Message("assistant", txt, now(), Dict()))
             return (success=true, text=txt)
         else
-            @warn(bot.logger, "Anthropic returned status $(r.status): $(String(r.body))")
-            return (success=false, error = string(r.status))
+            body = String(r.body)
+            @warn(bot.logger, "Anthropic returned status $(r.status): $body")
+            return (success=false, error=string(r.status) * " " * body)
         end
     catch e
         @error(bot.logger, "Failed to call Anthropic: $e")
         return (success=false, error=string(e))
     end
 end
+
 
 function cleanup!(bot::Claude)
     @info(bot.logger, "Cleaning up bot and MCP connections...")
