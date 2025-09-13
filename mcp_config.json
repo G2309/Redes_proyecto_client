@@ -1,0 +1,10 @@
+{
+  "servers": [
+    {
+      "name": "WeatherMCP",
+      "transport": "sse",
+      "url": "http://34.224.213.28:5309/mcp"
+    }
+  ]
+}
+
