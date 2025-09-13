@@ -103,7 +103,7 @@ function send_stream(bot::Claude, user_input::String)
 
     # Use modern Messages API format
     payload = Dict(
-        "model" => "claude-3-haiku-20240307",
+        "model" => "claude-sonnet-4-20250514",
         "max_tokens" => 1000,                      
         "system" => bot.sys_prompt,                
         "messages" => prepare_msgs(bot)           

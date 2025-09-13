@@ -4,34 +4,87 @@ using JSON
 using HTTP
 using Logging
 using Base.Threads: @spawn
+using Random
 
 export MCPServerConfig, MCPMgr, load_mcp_config, start!, start_stdio!, start_sse!, call_tool, tools_anthropic, get_tools, cleanup!
 
 struct MCPServerConfig
     name::String
-    transport::String    # "stdio" or "sse"
-    cmd::Union{Nothing,String}
+    transport::String    
+    cmd::Union{Nothing,Vector{String}}   
     url::Union{Nothing,String}
     enabled::Bool
 end
 
 mutable struct MCPMgr
     servers::Dict{String,MCPServerConfig}
-    tools::Dict{String,Any}           # server_name => Dict(toolname=>toolmeta)
-    conns::Dict{String,Any}           # server_name => connection handle (IO, Task, HTTP connection, ...)
+    tools::Dict{String,Any}           
+    conns::Dict{String,Any}           
     logger::AbstractLogger
+    msg_id::Int
 end
 
 function MCPMgr(configs::Vector{MCPServerConfig}; logger=ConsoleLogger())
     sdict = Dict(cfg.name => cfg for cfg in configs)
-    return MCPMgr(sdict, Dict{String,Any}(), Dict{String,Any}(), logger)
+    return MCPMgr(sdict, Dict{String,Any}(), Dict{String,Any}(), logger, 0)
 end
 
-# start all servers
+# Generate unique message ID
+function next_id(mgr::MCPMgr)
+    mgr.msg_id += 1
+    return string(mgr.msg_id)
+end
+
+# Send JSON-RPC message and wait for response
+function send_jsonrpc(io, id, method, params=nothing)
+    # Force a Dict that can accept any value type
+    msg = Dict{String,Any}(
+        "jsonrpc" => "2.0",
+        "id"      => id,
+        "method"  => method
+    )
+    if params !== nothing
+        msg["params"] = params
+    end
+
+    raw = JSON.json(msg)
+    println(">>> Sending: ", raw)  # Debug
+    write(io, raw * "\n")
+    flush(io)
+end
+
+
+# Read response with ID matching
+function read_response(io, expected_id; timeout_sec=10)
+    deadline = time() + timeout_sec
+    while time() < deadline
+        if eof(io)
+            sleep(0.05)
+            continue
+        end
+        line = readline(io)
+        println("<<< Received: ", line)  # Debug
+        if isempty(strip(line))
+            continue
+        end
+        try
+            resp = JSON.parse(line)
+            if haskey(resp, "id") && resp["id"] == expected_id
+                return resp
+            end
+        catch e
+            println("Error parsing response: ", e)
+            continue
+        end
+    end
+    return nothing
+end
+
+# Start all servers
 function start!(mgr::MCPMgr)
     for (name, cfg) in mgr.servers
         if !cfg.enabled
-            @info(mgr.logger, "Skipping disabled MCP server: $name")
+            println("Skipping disabled MCP server: ", name)
             continue
         end
         try
@@ -40,23 +93,105 @@ function start!(mgr::MCPMgr)
             elseif lowercase(cfg.transport) == "sse"
                 start_sse!(mgr, cfg)
             else
-                @warn(mgr.logger, "Unknown transport $(cfg.transport) for server $name")
+                println("Warning: Unknown transport ", cfg.transport, " for server ", name)
             end
         catch e
-            @error(mgr.logger, "Failed starting server $name: $e")
+            println("Error: Failed starting server ", name, ": ", e)
         end
     end
 end
 
-# Start a stdio-backed server by launching its command and communicating JSON-lines.
+# Start a stdio-backed server with proper MCP initialization
 function start_stdio!(mgr::MCPMgr, cfg::MCPServerConfig)
     if cfg.cmd === nothing
         throw(ArgumentError("stdio transport requires a `cmd` in config for server $(cfg.name)"))
     end
 
-    @info(mgr.logger, "Starting stdio server $(cfg.name) -> $(cfg.cmd)")
-    proc_io = open(`$(cfg.cmd)`, "r+")
+    cmdstr = join(cfg.cmd, " ")
+    println("Starting stdio server ", cfg.name, " -> ", cmdstr)
 
+    # Check if command exists
+    exe = Sys.which(cfg.cmd[1])
+    if exe === nothing
+        println("Error: Command not found in PATH: ", cfg.cmd[1], " (server ", cfg.name, ")")
+        throw(ErrorException("Command not found: $(cfg.cmd[1])"))
+    end
+
+    proc_io = open(`sh -c $cmdstr`, "r+")
+    
+    mgr.conns[cfg.name] = (type = :stdio, io = proc_io, task = nothing)
+    
+    try
+        sleep(0.5)
+        
+        init_id = next_id(mgr)
+        init_params = Dict{String, Any}(
+            "protocolVersion" => "0.1.0",
+            "capabilities" => Dict{String, Any}(
+                "tools" => Dict{String, Any}()
+            ),
+            "clientInfo" => Dict{String, Any}(
+                "name" => "julia-mcp-client",
+                "version" => "0.1.0"
+            )
+        )
+        
+        send_jsonrpc(proc_io, init_id, "initialize", init_params)
+        
+        init_resp = read_response(proc_io, init_id)
+        if init_resp === nothing
+            println("Error: No initialize response from ", cfg.name)
+            close(proc_io)
+            delete!(mgr.conns, cfg.name)
+            return
+        end
+        
+        println("Initialized ", cfg.name, ": ", JSON.json(get(init_resp, "result", Dict())))
+
+		initialized_msg = Dict{String,Any}(
+    		"jsonrpc" => "2.0",
+    		"method"  => "notifications/initialized"
+		)
+
+        
+        println(">>> Sending notification: ", JSON.json(initialized_msg))
+        write(proc_io, JSON.json(initialized_msg) * "\n")
+        flush(proc_io)
+        
+        # Give server time to process
+        sleep(0.2)
+        
+        # Step 3: Request tools list
+        tools_id = next_id(mgr)
+        send_jsonrpc(proc_io, tools_id, "tools/list")
+        
+        tools_resp = read_response(proc_io, tools_id)
+        if tools_resp !== nothing && haskey(tools_resp, "result") && haskey(tools_resp["result"], "tools")
+            tools_list = tools_resp["result"]["tools"]
+            # Store tools indexed by tool name
+            tool_dict = Dict{String,Any}()
+            for tool in tools_list
+                tool_dict[tool["name"]] = tool
+            end
+            mgr.tools[cfg.name] = tool_dict
+            println("Registered ", length(tools_list), " tools for ", cfg.name)
+            for (tname, _) in tool_dict
+                println("  - ", tname)
+            end
+        else
+            println("Warning: No tools received from ", cfg.name)
+            mgr.tools[cfg.name] = Dict{String,Any}()
+        end
+        
+    catch e
+        println("Error: Failed to initialize ", cfg.name, ": ", e)
+        println("Stack trace: ")
+        Base.show_backtrace(stdout, catch_backtrace())
+        try close(proc_io) catch end
+        delete!(mgr.conns, cfg.name)
+        return
+    end
+    
     t = @spawn begin
         try
             while !eof(proc_io)
@@ -66,127 +201,61 @@ function start_stdio!(mgr::MCPMgr, cfg::MCPServerConfig)
                 end
                 try
                     msg = JSON.parse(line)
-                    if haskey(msg, "type") && msg["type"] == "tools"
-                        mgr.tools[cfg.name] = msg["tools"]
-                        @info(mgr.logger, "Registered $(length(msg["tools"])) tools for $(cfg.name)")
-                    else
-                        @info(mgr.logger, "Message from $(cfg.name): $(msg)")
+                    if !haskey(msg, "id")
+                        println("Notification from ", cfg.name, ": ", JSON.json(msg))
                     end
                 catch e
-                    @warn(mgr.logger, "Failed parsing JSON from $(cfg.name): $e | raw: $line")
                 end
             end
         catch e
-            @error(mgr.logger, "Stdio reader task for $(cfg.name) failed: $e")
-        finally
-            try close(proc_io) catch end
+            println("Reader task for ", cfg.name, " ended: ", e)
         end
     end
-
+    
+    # Update connection with task
     mgr.conns[cfg.name] = (type = :stdio, io = proc_io, task = t)
 end
 
-# Start SSE server (simple SSE client reading event: data: <json>)
+# Start SSE server (
 function start_sse!(mgr::MCPMgr, cfg::MCPServerConfig)
     if cfg.url === nothing
         throw(ArgumentError("sse transport requires a `url` in config for server $(cfg.name)"))
     end
-    @info(mgr.logger, "Connecting SSE to $(cfg.url) for server $(cfg.name)")
-
-    http_task = @spawn begin
-        try
-			HTTP.open("GET", cfg.url; headers = ["Accept" => "text/event-stream"]) do conn
-    		buf = String[]
-    			body = conn.body
-    			for chunk in body
-        			s = String(chunk)
-        			push!(buf, s)
-        			joined = join(buf, "")
-        			parts = split(joined, "\n\n")
-        			for i in 1:(length(parts)-1)
-            			event = parts[i]
-            			lines = split(event, '\n')
-            			datas = String[]
-            			for L in lines
-                			Ls = strip(L)
-                			if startswith(Ls, "data:")
-                    			push!(datas, strip(replace(Ls, "data:" => "")))
-                			end
-            			end
-            			if !isempty(datas)
-                			text = join(datas, "\n")
-                			try
-                    			obj = JSON.parse(text)
-                    			if haskey(obj, "type") && obj["type"] == "tools"
-                        			mgr.tools[cfg.name] = obj["tools"]
-                        			@info(mgr.logger, "Registered $(length(obj["tools"])) tools for $(cfg.name) (SSE)")
-                    			else
-                        			@info(mgr.logger, "SSE $(cfg.name) -> $(obj)")
-                    			end
-                			catch e
-                    			@warn(mgr.logger, "Failed parse SSE JSON from $(cfg.name): $e | raw: $text")
-                			end
-            			end
-        			end
-        			buf = [parts[end]]
-    			end
-			end
-        	catch e
-            @error(mgr.logger, "SSE connection for $(cfg.name) failed: $e")
-        end
-    end
-
-    mgr.conns[cfg.name] = (type = :sse, task = http_task, url = cfg.url)
+    println("Info: SSE transport not fully implemented yet for ", cfg.name)
+    mgr.tools[cfg.name] = Dict{String,Any}()
 end
 
-# Call a tool by sending a JSON message to the server and waiting for a response.
+# Call a tool using JSON-RPC protocol
 function call_tool(mgr::MCPMgr, server_name::String, tool_name::String, args::Dict{String,Any}; timeout_sec=10)
     if !haskey(mgr.conns, server_name)
         return (success=false, error = "No connection to server $server_name")
     end
+    
     conn = mgr.conns[server_name]
-    payload = Dict("type" => "call", "tool" => tool_name, "args" => args)
-    raw = JSON.json(payload)
-
+    
     if conn[:type] == :stdio
         io = conn[:io]
         try
-            write(io, raw * "\n")
-            flush(io)
-            deadline = time() + timeout_sec
-            while time() < deadline
-                if eof(io)
-                    sleep(0.05)
-                    continue
-                end
-                line = readline(io)
-                if isempty(strip(line))
-                    continue
-                end
-                try
-                    resp = JSON.parse(line)
-                    return (success=true, result=resp)
-                catch e
-                    return (success=false, error = "Invalid JSON response: $e")
-                end
+            call_id = next_id(mgr)
+            send_jsonrpc(io, call_id, "tools/call", Dict(
+                "name" => tool_name,
+                "arguments" => args
+            ))
+            
+            resp = read_response(io, call_id; timeout_sec=timeout_sec)
+            if resp === nothing
+                return (success=false, error = "Timeout waiting for response")
             end
-            return (success=false, error = "Timeout waiting for response")
-        catch e
-            return (success=false, error = string(e))
-        end
-    elseif conn[:type] == :sse
-        cfg = mgr.servers[server_name]
-        if cfg.url === nothing
-            return (success=false, error = "SSE server has no URL configured for POST calls")
-        end
-        post_url = cfg.url
-        try
-            r = HTTP.post(post_url, ["Content-Type" => "application/json"], raw)
-            if r.status == 200
-                return (success=true, result = JSON.parse(String(r.body)))
-            else
-                return (success=false, error = "HTTP error $(r.status)")
+            
+            if haskey(resp, "error")
+                return (success=false, error = resp["error"])
             end
+            
+            if haskey(resp, "result")
+                return (success=true, result=resp["result"])
+            end
+            
+            return (success=false, error = "Invalid response format")
         catch e
             return (success=false, error = string(e))
         end
@@ -195,19 +264,19 @@ function call_tool(mgr::MCPMgr, server_name::String, tool_name::String, args::Di
     end
 end
 
-# Convert available tools into a format Anthropic expects (basic shape). Add server prefix.
+# Convert available tools into a format Anthropic expects
 function tools_anthropic(mgr::MCPMgr)
-    out = Dict()
+    out = []
     for (sname, tdict) in mgr.tools
-        converted = Vector{Dict{String,Any}}()
         for (tname, meta) in tdict
-            push!(converted, Dict(
-                "name" => "$(sname)::$(tname)",
-                "description" => get(meta, "description", ""),
-                "args_schema" => get(meta, "args_schema", Dict())
-            ))
+            # Use the full tool name with server prefix
+            tool_def = Dict(
+                "name" => "$(sname)__$(tname)",  # Use __ as separator for clarity
+                "description" => get(meta, "description", "Tool from $sname"),
+                "input_schema" => get(meta, "inputSchema", Dict("type" => "object", "properties" => Dict()))
+            )
+            push!(out, tool_def)
         end
-        out[sname] = converted
     end
     return out
 end
@@ -222,35 +291,51 @@ function cleanup!(mgr::MCPMgr)
             if conn[:type] == :stdio
                 io = conn[:io]
                 try
-                    write(io, "{\"type\":\"shutdown\"}\n")
+                    # Send shutdown notification
+					shutdown_msg = Dict{String,Any}(
+    					"jsonrpc" => "2.0",
+    					"method"  => "shutdown"
+					)
+
+                    write(io, JSON.json(shutdown_msg) * "\n")
                     flush(io)
+                    sleep(0.1)  # Give time for graceful shutdown
                 catch
                 end
                 try close(io) catch end
-            elseif conn[:type] == :sse
-                try
-                    Base.Threads.kill(conn[:task])
-                catch
-                end
             end
         catch e
-            @warn(mgr.logger, "Error closing connection $name: $e")
+            println("Warning: Error closing connection ", name, ": ", e)
         end
     end
     empty!(mgr.conns)
     empty!(mgr.tools)
 end
 
-# helper: load JSON config file and return Vector{MCPServerConfig}
 function load_mcp_config(path::String)
     txt = read(path, String)
     j = JSON.parse(txt)
     configs = MCPServerConfig[]
     for item in j["mcp_servers"]
+        cmdvec = nothing
+        if haskey(item, "cmd") && item["cmd"] !== nothing
+            if isa(item["cmd"], String)
+                cmdvec = [item["cmd"]]
+            elseif isa(item["cmd"], Array)
+                cmdvec = [string(x) for x in item["cmd"]]
+            end
+        elseif haskey(item, "command") && item["command"] !== nothing
+            cmdvec = [string(item["command"])]
+        end
+
+        if cmdvec !== nothing && haskey(item, "args") && isa(item["args"], Array)
+            cmdvec = vcat(cmdvec, [string(x) for x in item["args"]])
+        end
+
         push!(configs, MCPServerConfig(
             item["name"],
             item["transport"],
-            get(item, "cmd", nothing),
+            cmdvec,
             get(item, "url", nothing),
             get(item, "enabled", true)
         ))

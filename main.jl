@@ -28,24 +28,20 @@ end
 
 function main()
     cfg = load_config()
-
     if isempty(strip(cfg["api_key"]))
         println("DEBUG: Anthropic API key NOT FOUND in ENV (checked common names).")
-        println(" - Comprueba que .env existe en el directorio desde el que ejecutas Julia.")
-        println(" - Comprueba que la línea en .env es: Anthropic_API_key=sk-ant-... (sin comillas).")
-        println(" - También puedes ejecutar: julia -e 'using DotEnv; DotEnv.config(); println(get(ENV, \"Anthropic_API_key\", \"<none>\"))'")
-    else
-        println("DEBUG: Anthropic API key found, length = ", length(cfg["api_key"]), " (not printed).")
+
     end
 
     mcp_configs = MCPManager.load_mcp_config(cfg["mcp_cfg"])
     mgr = MCPManager.MCPMgr(mcp_configs)
 
-    # crea el bot con la api_key (puede estar vacía; ClaudeBot.send_stream ya chequea)
+    # crea el bot con la api_key 
     bot = ClaudeBot.Claude(cfg["api_key"], mgr; max_ctx=cfg["max_ctx"], sys_prompt=cfg["sys_prompt"])
     ClaudeBot.init_bot!(bot)
 
     println("MCP client ready. Escribe '/quit' para salir.")
+
     while true
         print("Tú: ")
         line = readline()
