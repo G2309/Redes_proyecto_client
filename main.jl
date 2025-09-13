@@ -7,7 +7,7 @@ using JSON
 using Dates
 using DotEnv
 
-DotEnv.config(joinpath(@__DIR__, ".env"))
+DotEnv.load!()
 
 function find_env_key(names::Vector{String})
     for n in names

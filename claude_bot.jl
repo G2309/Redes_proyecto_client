@@ -4,7 +4,7 @@ using JSON
 using Dates
 using Logging
 using HTTP
-using ..MCPManager
+const MCPManager = Main.MCPManager
 
 export Claude, load_session!, save_session!, init_bot!, send_stream, cleanup!
 
@@ -70,11 +70,13 @@ end
 
 function prepare_msgs(bot::Claude)
     msgs = []
-    push!(msgs, Dict("role"=>"system", "content"=>bot.sys_prompt))
+    # Only include user/assistant messages, system prompt goes separately
     start_idx = max(1, length(bot.history) - bot.max_ctx + 1)
     for i in start_idx:length(bot.history)
         m = bot.history[i]
-        push!(msgs, Dict("role"=>m.role, "content"=>m.content))
+        if m.role in ["user", "assistant"]  # Only include user and assistant messages
+            push!(msgs, Dict("role"=>m.role, "content"=>m.content))
+        end
     end
     return msgs
 end
@@ -95,38 +97,70 @@ function send_stream(bot::Claude, user_input::String)
     push!(bot.history, Message("user", user_input, now(), Dict()))
 
     if isempty(strip(bot.api_key))
-        @error(bot.logger, "Anthropic API key is empty. Set Anthropic_API_key in your .env")
+        @error(bot.logger, "Anthropic API key is empty. Set Anthropic_API_key in your .env or export it in the environment.")
         return (success=false, error="Missing Anthropic API key")
     end
 
+    # Use modern Messages API format
     payload = Dict(
-        "model" => "claude-2.1",
-        "messages" => prepare_msgs(bot),
-        "max_tokens_to_sample" => 1000
+        "model" => "claude-3-haiku-20240307",
+        "max_tokens" => 1000,                      
+        "system" => bot.sys_prompt,                
+        "messages" => prepare_msgs(bot)           
     )
 
-    headers = ["content-type" => "application/json", "x-api-key" => bot.api_key]
+    headers = Dict(
+        "content-type" => "application/json",
+        "x-api-key" => bot.api_key,
+        "anthropic-version" => "2023-06-01"       # API version
+    )
 
     try
-        r = HTTP.post("https://api.anthropic.com/v1/complete"; headers=headers, body=JSON.json(payload))
+        r = HTTP.post("https://api.anthropic.com/v1/messages"; headers=headers, body=JSON.json(payload))
 
         if r.status == 200
             body = String(r.body)
             parsed = JSON.parse(body)
-            txt = get(parsed, "completion", get(parsed, "text", ""))
+            
+            # Extract text from the modern API response format
+            txt = ""
+            if haskey(parsed, "content") && length(parsed["content"]) > 0
+                # Modern API returns content as an array of content blocks
+                for content_block in parsed["content"]
+                    if content_block["type"] == "text"
+                        txt *= content_block["text"]
+                    end
+                end
+            end
+            
             push!(bot.history, Message("assistant", txt, now(), Dict()))
             return (success=true, text=txt)
         else
-            body = String(r.body)
+            body = try String(r.body) catch _ "" end
             @warn(bot.logger, "Anthropic returned status $(r.status): $body")
             return (success=false, error=string(r.status) * " " * body)
         end
     catch e
-        @error(bot.logger, "Failed to call Anthropic: $e")
-        return (success=false, error=string(e))
+        try
+            if typeof(e) <: HTTP.Exceptions.StatusError
+                response_body = ""
+                try
+                    response_body = String(e.response.body)
+                catch
+                    response_body = "Could not read response body"
+                end
+                @error(bot.logger, "Anthropic API Error ($(e.status)): $response_body")
+                return (success=false, error="API Error $(e.status): $response_body")
+            else
+                @error(bot.logger, "Failed to call Anthropic: $e")
+                return (success=false, error=string(e))
+            end
+        catch
+            @error(bot.logger, "Unexpected error while handling exception: $e")
+            return (success=false, error=string(e))
+        end
     end
 end
-
 
 function cleanup!(bot::Claude)
     @info(bot.logger, "Cleaning up bot and MCP connections...")
