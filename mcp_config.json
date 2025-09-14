@@ -16,7 +16,7 @@
 	{
       "name": "moon",
       "transport": "sse",
-      "url": "",
+      "url": "p01--mcpmoonservice--wyrdcdk6ht2t.code.run",
       "description": "Moon phase MCP server (SSE)"
     } 
   ]
