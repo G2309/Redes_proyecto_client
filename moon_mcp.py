@@ -2,18 +2,14 @@ from datetime import datetime, date
 from math import floor
 import os
 import logging
-
-# FastMCP server
 from fastmcp import FastMCP
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("moon_mcp")
 
-mcp = FastMCP("moon_mcp") 
+mcp = FastMCP("moon-phase", "Moon Phase MCP server")
 
-# ---------- Utility: moon calculation ----------
 def moon_phase_from_date(d: date):
-    """Compute approximate moon age and illumination."""
     y = d.year
     m = d.month
     day = d.day
@@ -54,14 +50,8 @@ def moon_phase_from_date(d: date):
         "phase": phase,
     }
 
-# ---------- Tool: moon_phase ----------
 @mcp.tool()
 def moon_phase(date: str = None) -> dict:
-    """
-    Devuelve la fase lunar para una fecha ISO (YYYY-MM-DD).
-    - date: opcional, formato 'YYYY-MM-DD'. Si no se pasa, usa la fecha UTC actual.
-    Retorna: dict {date, phase, age_days, illumination_pct}
-    """
     if date:
         try:
             d = datetime.strptime(date, "%Y-%m-%d").date()
@@ -73,13 +63,13 @@ def moon_phase(date: str = None) -> dict:
 
 @mcp.tool(name="mcp.server.shutdown")
 def mcp_server_shutdown() -> dict:
-    """Indica que el servidor acepta una petición de apagado (no forzamos exit desde aquí)."""
     logger.info("Shutdown requested via mcp.server.shutdown — returning acknowledgement.")
     return {"shutdown": True}
 
-# ---------- uvicorn ----------
+app = mcp.asgi_app()
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", "8080"))
-    uvicorn.run("moon_mcp:mcp", host="0.0.0.0", port=port)
+    uvicorn.run("moon_mcp:app", host="0.0.0.0", port=port)
 
