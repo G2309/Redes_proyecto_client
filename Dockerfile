@@ -9,4 +9,4 @@ COPY moon_mcp.py .
 
 ENV PORT=8080
 
-CMD ["uvicorn", "moon_mcp:mcp", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "moon_mcp:app", "--host", "0.0.0.0", "--port", "8080"]
