@@ -66,7 +66,7 @@ def mcp_server_shutdown() -> dict:
     logger.info("Shutdown requested via mcp.server.shutdown — returning acknowledgement.")
     return {"shutdown": True}
 
-app = mcp.asgi_app()
+app = mcp.sse_app()
 
 if __name__ == "__main__":
     import uvicorn
