@@ -55,14 +55,33 @@ function main()
                 println("- ", srv, ": ", join(keys(tools), ", "))
             end
             continue
-        elseif startswith(cmd, "/use ")
+		elseif startswith(cmd, "/use ")
             parts = split(cmd)
             if length(parts) < 3
                 println("Uso: /use <server> <tool> [args-json]")
                 continue
             end
-            srv, tool = parts[2], parts[3]
-            args = length(parts) > 3 ? JSON.parse(join(parts[4:end], " ")) : Dict()
+
+            srv = String(parts[2])
+            tool = String(parts[3])
+
+            args = Dict{String,Any}()
+            if length(parts) > 3
+                raw = join(parts[4:end], " ")
+                parsed = try JSON.parse(raw) catch e
+                    println("Error parseando JSON de args: ", e)
+                    continue
+                end
+				if isa(parsed, Dict)
+    				args = Dict{String,Any}()
+    				for (k,v) in parsed
+        				args[string(k)] = v
+    				end
+				else
+    				println("Los args deben ser un objeto JSON (p.ej. {\"repo_path\": \".\"})")
+    				continue
+				end
+            end
             res = MCPManager.call_tool(mgr, srv, tool, args)
             println("Resultado: ", res)
             continue

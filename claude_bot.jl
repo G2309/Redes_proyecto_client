@@ -82,16 +82,77 @@ function prepare_msgs(bot::Claude)
 end
 
 function handle_tool_calls(bot::Claude, msg::Message)
-    if haskey(msg.meta, "tool_call")
-        tc = msg.meta["tool_call"]
-        server = tc["server"]
-        tool = tc["tool"]
-        args = get(tc, "args", Dict())
-        res = MCPManager.call_tool(bot.mcp_mgr, server, tool, args)
-        return res
+    if !haskey(msg.meta, "tool_call")
+        return nothing
+    end
+
+    tc = msg.meta["tool_call"]
+    server_raw = get(tc, "server", nothing)
+    tool_raw   = get(tc, "tool", nothing)
+    args_raw   = get(tc, "args", Dict())
+
+    server, tool = normalize_server_tool(server_raw, tool_raw)
+
+    args = Dict{String,Any}()
+    if isa(args_raw, Dict)
+        for (k,v) in args_raw
+            args[string(k)] = v
+        end
+    end
+
+    if isempty(strip(server)) || isempty(strip(tool))
+        return (success=false, error="tool_call mal formado tras normalización: falta server o tool")
+    end
+
+    try
+        return MCPManager.call_tool(bot.mcp_mgr, server, tool, args)
+    catch e
+        return (success=false, error=string(e))
+    end
+end
+
+function extract_first_json_object(s::String)
+    start_idx = findfirst('{', s)
+    if start_idx === nothing
+        return nothing
+    end
+    for end_idx in start_idx+1:length(s)
+        if s[end_idx] == '}'
+            candidate = s[start_idx:end_idx]
+            try
+                parsed = JSON.parse(candidate)
+                return parsed
+            catch
+            end
+        end
     end
     return nothing
 end
+
+function normalize_server_tool(server_raw, tool_raw)
+    server = server_raw === nothing ? "" : String(server_raw)
+    tool   = tool_raw   === nothing ? "" : String(tool_raw)
+
+    if isempty(server) || lowercase(server) == "mcp"
+        if occursin("__", tool)
+            parts = split(tool, "__")
+            if length(parts) >= 2
+                server = parts[1]
+                tool = parts[2]
+            end
+        end
+    end
+
+    if occursin("__", server) && !occursin("__", tool)
+        parts = split(server, "__")
+        if length(parts) >= 2
+            server, tool = parts[1], parts[2]
+        end
+    end
+
+    return (server, tool)
+end
+
 
 function send_stream(bot::Claude, user_input::String)
     push!(bot.history, Message("user", user_input, now(), Dict()))
@@ -101,18 +162,30 @@ function send_stream(bot::Claude, user_input::String)
         return (success=false, error="Missing Anthropic API key")
     end
 
-    # Use modern Messages API format
+    tool_list = []
+    for (s, tdict) in bot.mcp_mgr.tools
+        for (t, _) in tdict
+            push!(tool_list, "$(s)__$(t)")
+        end
+    end
+    tool_list_str = isempty(tool_list) ? "Ninguna" : join(tool_list, ", ")
+
+    sys_with_tools = bot.sys_prompt * "\n\nHerramientas disponibles: " * tool_list_str * "\n" *
+        "Si deseas invocar una herramienta, responde SOLO con un JSON EXACTO con este formato:\n" *
+        "{\"tool_call\": {\"server\": \"<server>\", \"tool\": \"<tool>\", \"args\": { ... } }}\n" *
+        "No incluyas texto adicional cuando estés invocando la herramienta. Si no vas a invocar herramienta, responde en lenguaje natural."
+
     payload = Dict(
-        "model" => "claude-sonnet-4-20250514",
-        "max_tokens" => 1000,                      
-        "system" => bot.sys_prompt,                
-        "messages" => prepare_msgs(bot)           
+        "model" => "claude-3-5-haiku-20241022",
+        "max_tokens" => 1000,
+        "system" => sys_with_tools,
+        "messages" => prepare_msgs(bot)
     )
 
     headers = Dict(
         "content-type" => "application/json",
         "x-api-key" => bot.api_key,
-        "anthropic-version" => "2023-06-01"       # API version
+        "anthropic-version" => "2023-06-01"
     )
 
     try
@@ -122,18 +195,56 @@ function send_stream(bot::Claude, user_input::String)
             body = String(r.body)
             parsed = JSON.parse(body)
             
-            # Extract text from the modern API response format
             txt = ""
             if haskey(parsed, "content") && length(parsed["content"]) > 0
-                # Modern API returns content as an array of content blocks
                 for content_block in parsed["content"]
                     if content_block["type"] == "text"
                         txt *= content_block["text"]
                     end
                 end
             end
-            
+
+            if isempty(strip(txt))
+                txt = get(parsed, "text", "")  
+            end
+
             push!(bot.history, Message("assistant", txt, now(), Dict()))
+
+            parsed_json = extract_first_json_object(txt)
+            if parsed_json !== nothing && haskey(parsed_json, "tool_call")
+                tc = parsed_json["tool_call"]
+                server = get(tc, "server", nothing)
+                tool = get(tc, "tool", nothing)
+                args = get(tc, "args", Dict{String,Any}())
+
+                if server === nothing || tool === nothing
+                    @warn(bot.logger, "tool_call JSON mal formado: $(parsed_json)")
+                    return (success=true, text=txt)  # devolvemos la respuesta textual
+                end
+
+                tool_msg = Message("assistant", txt, now(), Dict("tool_call" => Dict("server"=>server, "tool"=>tool, "args"=>args)))
+                tool_res = handle_tool_calls(bot, tool_msg)
+
+                if tool_res === nothing
+                    @warn(bot.logger, "handle_tool_calls devolvió nothing")
+                    return (success=false, error="Tool handler returned nothing")
+                end
+
+                result_text = ""
+                if haskey(tool_res, :success) && tool_res[:success] == true
+                    # Serializar resultado si existe
+                    result_text = "TOOL_RESULT: " * (haskey(tool_res, :result) ? JSON.json(tool_res[:result]) : "sin contenido")
+                else
+                    # Error en la herramienta
+                    result_text = "TOOL_ERROR: " * get(tool_res, :error, "error desconocido")
+                end
+
+                push!(bot.history, Message("assistant", result_text, now(), Dict("tool_result"=>tool_res)))
+
+                full_text = "Claude Bot: \n" * txt * "\n\n" * result_text
+                return (success=true, text=full_text)
+            end
+
             return (success=true, text=txt)
         else
             body = try String(r.body) catch _ "" end

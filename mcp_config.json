@@ -1,10 +1,10 @@
 {
   "mcp_servers": [
     {
-      "name": "git",
+      "name": "Git",
       "transport": "stdio",
       "command": "uvx",
-      "args": ["mcp-server-git"]
+      "args": ["mcp-server-git", "--repository", "./"]
     }
   ]
 }

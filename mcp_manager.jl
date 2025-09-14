@@ -37,7 +37,6 @@ end
 
 # Send JSON-RPC message and wait for response
 function send_jsonrpc(io, id, method, params=nothing)
-    # Force a Dict that can accept any value type
     msg = Dict{String,Any}(
         "jsonrpc" => "2.0",
         "id"      => id,
@@ -48,35 +47,75 @@ function send_jsonrpc(io, id, method, params=nothing)
     end
 
     raw = JSON.json(msg)
-    println(">>> Sending: ", raw)  # Debug
-    write(io, raw * "\n")
-    flush(io)
+
+    try
+        write(io, raw * "\n")
+        flush(io)
+    catch e
+        println("Error escribiendo en IO: ", e)
+        rethrow(e)
+    end
 end
 
 
 # Read response with ID matching
 function read_response(io, expected_id; timeout_sec=10)
     deadline = time() + timeout_sec
+    buffer = ""
     while time() < deadline
         if eof(io)
             sleep(0.05)
             continue
         end
-        line = readline(io)
-        println("<<< Received: ", line)  # Debug
-        if isempty(strip(line))
-            continue
-        end
-        try
-            resp = JSON.parse(line)
-            if haskey(resp, "id") && resp["id"] == expected_id
-                return resp
-            end
+
+        line = try
+            readline(io)
         catch e
-            println("Error parsing response: ", e)
-            continue
+            try
+                available = readavailable(io)
+                    isempty(available) ? "" : String(available)
+            catch
+                ""
+            end
         end
+
+        if !isempty(line)
+            sline = strip(line)
+            if isempty(sline)
+                continue
+            end
+
+            try
+                resp = JSON.parse(sline)
+                if haskey(resp, "id") && resp["id"] == expected_id
+                    return resp
+                else
+                    continue
+                end
+            catch e
+                buffer *= line * "\n"
+            end
+        end
+
+        if !isempty(buffer)
+            try
+                resp = JSON.parse(buffer)
+                if haskey(resp, "id") && resp["id"] == expected_id
+                    return resp
+                end
+            catch
+            end
+        end
+
+        try
+            nothing
+        catch
+            nothing
+        end
+
+        sleep(0.01)
     end
+
     return nothing
 end
 
@@ -107,23 +146,29 @@ function start_stdio!(mgr::MCPMgr, cfg::MCPServerConfig)
         throw(ArgumentError("stdio transport requires a `cmd` in config for server $(cfg.name)"))
     end
 
+    # Construir cmd completo y comprobar existencia del ejecutable
     cmdstr = join(cfg.cmd, " ")
     println("Starting stdio server ", cfg.name, " -> ", cmdstr)
 
-    # Check if command exists
     exe = Sys.which(cfg.cmd[1])
     if exe === nothing
         println("Error: Command not found in PATH: ", cfg.cmd[1], " (server ", cfg.name, ")")
         throw(ErrorException("Command not found: $(cfg.cmd[1])"))
     end
 
-    proc_io = open(`sh -c $cmdstr`, "r+")
-    
+    # Envuelve el comando para forzar line-buffered stdout/stderr y redirigir stderr a stdout
+    # stdbuf suele estar disponible en coreutils; si no, puedes quitar este wrapper o instalar stdbuf.
+    wrapped_cmd = "stdbuf -oL -eL " * cmdstr * " 2>&1"
+    println("Starting stdio server ", cfg.name, " (wrapped): ", wrapped_cmd)
+
+    proc_io = open(`sh -c $wrapped_cmd`, "r+")
+
     mgr.conns[cfg.name] = (type = :stdio, io = proc_io, task = nothing)
-    
+
     try
-        sleep(0.5)
-        
+        # Dar un poco más de tiempo en arranque
+        sleep(1.0)
+
         init_id = next_id(mgr)
         init_params = Dict{String, Any}(
             "protocolVersion" => "0.1.0",
@@ -135,40 +180,36 @@ function start_stdio!(mgr::MCPMgr, cfg::MCPServerConfig)
                 "version" => "0.1.0"
             )
         )
-        
+
         send_jsonrpc(proc_io, init_id, "initialize", init_params)
-        
-        init_resp = read_response(proc_io, init_id)
+
+        # aumentar timeout durante el desarrollo (30s)
+        init_resp = read_response(proc_io, init_id; timeout_sec=30)
         if init_resp === nothing
             println("Error: No initialize response from ", cfg.name)
-            close(proc_io)
+            try close(proc_io) catch end
             delete!(mgr.conns, cfg.name)
             return
         end
-        
+
         println("Initialized ", cfg.name, ": ", JSON.json(get(init_resp, "result", Dict())))
 
-		initialized_msg = Dict{String,Any}(
-    		"jsonrpc" => "2.0",
-    		"method"  => "notifications/initialized"
-		)
-
-        
-        println(">>> Sending notification: ", JSON.json(initialized_msg))
+        initialized_msg = Dict{String,Any}(
+            "jsonrpc" => "2.0",
+            "method"  => "notifications/initialized"
+        )
         write(proc_io, JSON.json(initialized_msg) * "\n")
         flush(proc_io)
-        
-        # Give server time to process
+
         sleep(0.2)
-        
-        # Step 3: Request tools list
+
+        # Request tools list
         tools_id = next_id(mgr)
         send_jsonrpc(proc_io, tools_id, "tools/list")
-        
-        tools_resp = read_response(proc_io, tools_id)
+
+        tools_resp = read_response(proc_io, tools_id; timeout_sec=10)
         if tools_resp !== nothing && haskey(tools_resp, "result") && haskey(tools_resp["result"], "tools")
             tools_list = tools_resp["result"]["tools"]
-            # Store tools indexed by tool name
             tool_dict = Dict{String,Any}()
             for tool in tools_list
                 tool_dict[tool["name"]] = tool
@@ -182,16 +223,17 @@ function start_stdio!(mgr::MCPMgr, cfg::MCPServerConfig)
             println("Warning: No tools received from ", cfg.name)
             mgr.tools[cfg.name] = Dict{String,Any}()
         end
-        
+
     catch e
-        println("Error: Failed to initialize ", cfg.name, ": ", e)
+        println("Error: Failed starting server ", cfg.name, ": ", e)
         println("Stack trace: ")
         Base.show_backtrace(stdout, catch_backtrace())
         try close(proc_io) catch end
         delete!(mgr.conns, cfg.name)
         return
     end
-    
+
+    # Spawn background reader task (not bloquing el hilo principal)
     t = @spawn begin
         try
             while !eof(proc_io)
@@ -205,14 +247,14 @@ function start_stdio!(mgr::MCPMgr, cfg::MCPServerConfig)
                         println("Notification from ", cfg.name, ": ", JSON.json(msg))
                     end
                 catch e
+                    # Ignorar líneas no JSON o mensajes parciales
                 end
             end
         catch e
             println("Reader task for ", cfg.name, " ended: ", e)
         end
     end
-    
-    # Update connection with task
+
     mgr.conns[cfg.name] = (type = :stdio, io = proc_io, task = t)
 end
 
