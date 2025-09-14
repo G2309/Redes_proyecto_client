@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY moon_mcp_sse.py .
+COPY moon_mcp.py .
 
 ENV PORT=8080
 
