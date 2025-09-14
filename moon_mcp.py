@@ -13,9 +13,11 @@ def moon_phase_from_date(d: date):
     y = d.year
     m = d.month
     day = d.day
+    
     if m < 3:
         y -= 1
         m += 12
+    
     a = floor(y / 100)
     b = 2 - a + floor(a / 4)
     jd = floor(365.25 * (y + 4716)) + floor(30.6001 * (m + 1)) + day + b - 1524.5
@@ -25,6 +27,7 @@ def moon_phase_from_date(d: date):
     fraction = new_moons - floor(new_moons)
     age = fraction * synodic_month
     illumination = (1 - abs((age / (synodic_month / 2)) - 1)) * 100
+    
     if age < 1.84566:
         phase = "New Moon"
     elif age < 5.53699:
@@ -43,6 +46,7 @@ def moon_phase_from_date(d: date):
         phase = "Waning Crescent"
     else:
         phase = "New Moon"
+    
     return {
         "date": d.isoformat(),
         "age_days": round(age, 2),
@@ -59,6 +63,7 @@ def moon_phase(date: str = None) -> dict:
             raise ValueError("Formato inválido: use YYYY-MM-DD")
     else:
         d = datetime.utcnow().date()
+    
     return moon_phase_from_date(d)
 
 @mcp.tool(name="mcp.server.shutdown")
@@ -66,10 +71,10 @@ def mcp_server_shutdown() -> dict:
     logger.info("Shutdown requested via mcp.server.shutdown — returning acknowledgement.")
     return {"shutdown": True}
 
-app = mcp.sse_app()
+app = mcp.http_app()
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", "8080"))
-    uvicorn.run("moon_mcp:app", host="0.0.0.0", port=port)
-
+    
+    uvicorn.run(app, host="0.0.0.0", port=port)
