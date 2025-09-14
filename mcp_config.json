@@ -12,6 +12,12 @@
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/gustavo/Progra/Redes_proyecto_client"],
       "description": "File system operations server"
-    }
+    },
+	{
+      "name": "moon",
+      "transport": "sse",
+      "url": "",
+      "description": "Moon phase MCP server (SSE)"
+    } 
   ]
 }
