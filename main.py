@@ -130,6 +130,13 @@ class ChatApp(App):
         color: {TEXT};
         width: 36;
         padding: 1 1;
+        height: 1fr;
+    }}
+
+    #sidebar_content {{
+        background: transparent;
+        color: {TEXT};
+        padding: 0 0;
     }}
 
     Input {{
@@ -172,7 +179,6 @@ class ChatApp(App):
         yield Header(show_clock=True)
         with Horizontal(id="main"):
             with Vertical():
-                # show ASCII_ART initially, replaced shortly after mount
                 yield ScrollableContainer(
                     Static(ASCII_ART, id="messages_content"),
                     id="messages",
@@ -181,9 +187,13 @@ class ChatApp(App):
                     placeholder="Type a message and press Enter — commands: /help /quit /clear /tools /stats",
                     id="input",
                 )
-            yield Static("Initializing tools...", id="sidebar")
+            # Sidebar ahora es un ScrollableContainer con Static interno
+            yield ScrollableContainer(
+                Static("Initializing tools...", id="sidebar_content"),
+                id="sidebar",
+            )
         yield Footer()
-
+    
     # Initialize bot and UI elements
     async def on_mount(self) -> None:
         try:
@@ -224,7 +234,13 @@ class ChatApp(App):
 
     # Update the sidebar with available MCP tools
     async def _refresh_sidebar(self) -> None:
-        sidebar = self.query_one("#sidebar", Static)
+        sidebar = self.query_one("#sidebar", ScrollableContainer)
+        try:
+            content = sidebar.query_one("#sidebar_content", Static)
+        except Exception:
+            # fallback: si no existe, crea/obtén el Static directamente
+            content = self.query_one("#sidebar_content", Static)
+    
         tools = mcp_manager.get_available_tools()
         lines = []
         if tools:
@@ -232,10 +248,18 @@ class ChatApp(App):
                 lines.append(f"[b]{server_name}[/b]")
                 for t in server_tools:
                     desc = getattr(t, "description", "")
-                    lines.append(f" • {t.name} - {desc}")
+                    name = getattr(t, "name", getattr(t, "id", str(t)))
+                    lines.append(f" • {name} - {desc}")
         else:
             lines.append("No MCP tools available")
-        sidebar.update("\n".join(lines))
+        content.update("\n".join(lines))
+    
+        # intenta desplazar al final para que el usuario vea lo último
+        try:
+            await sidebar.scroll_end(animate=False)
+        except Exception:
+            # algunos backends/textual versions pueden no soportar scroll_end asíncrono
+            logger.debug("sidebar.scroll_end no está disponible; ignorando")
 
     # Append a message to the conversation view, then scroll
     async def append_message(self, chunk: str, role: str = "assistant") -> None:
@@ -407,3 +431,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
