@@ -12,7 +12,10 @@ from anthropic._exceptions import APIError, RateLimitError, APIConnectionError
 import mcp_manager
 
 logger = logging.getLogger(__name__)
-MODEL = "claude-3-7-sonnet-latest"
+
+MODEL = "claude-3-haiku-20240307"
+# I'll use this during presentation
+#MODEL = "claude-sonnet-4-20250514"
 MAX_TOKENS = 1000
 
 @dataclass
@@ -69,6 +72,7 @@ async def save_session():
     except Exception as e:
         logger.error(f"Failed to save session: {e}")
 
+
 def prepare_messages_for_api() -> List[Dict[str, Any]]:
     recent_messages = conversation_history[-max_context_messages:]
     
@@ -81,6 +85,7 @@ def prepare_messages_for_api() -> List[Dict[str, Any]]:
             })
     
     return api_messages
+
 
 async def handle_tool_calls(message: Message) -> List[Dict[str, Any]]:
     tool_results = []
@@ -173,7 +178,7 @@ async def send_message_stream(user_input: str):
             
             if current_tool_calls:
                 all_tool_calls.extend(current_tool_calls)
-                yield "\n\n🔧 Executing tools...\n"
+                yield "\n\nExecuting tools...\n"
                 
                 tool_results = await handle_tool_calls(final_message)
                 
@@ -205,14 +210,14 @@ async def send_message_stream(user_input: str):
         await save_session()
         
     except RateLimitError as e:
-        yield f"\n⚠️ Rate limit exceeded. Please wait a moment and try again."
+        yield f"\nRate limit exceeded. Please wait a moment and try again."
     except APIConnectionError as e:
-        yield f"\n❌ Connection error: {e}"
+        yield f"\nConnection error: {e}"
     except APIError as e:
-        yield f"\n❌ API error: {e}"
+        yield f"\nAPI error: {e}"
     except Exception as e:
         logger.error(f"Error sending message: {e}")
-        yield f"\n❌ Unexpected error: {e}"
+        yield f"\nUnexpected error: {e}"
 
 def clear_history():
     global conversation_history

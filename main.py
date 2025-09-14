@@ -1,175 +1,355 @@
 import os
-import json
 import asyncio
-import sys
 import logging
 from pathlib import Path
-
-try:
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.text import Text
-except ImportError:
-    print("Please install rich: uv add rich")
-    sys.exit(1)
-
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
+from rich.panel import Panel
+# Textual TUI
+from textual.app import App, ComposeResult
+from textual.containers import Horizontal, Vertical, ScrollableContainer
+from textual.widgets import Header, Footer, Input, Static, Button
 import claude_bot
 import mcp_manager
+from dotenv import load_dotenv
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def load_config():
-    config = {
-        "api_key": os.getenv("Anthropic_API_key"),
-        "max_context_messages": int(os.getenv("MAX_CONTEXT_MESSAGES", "20")),
-        "mcp_servers": []
+ASCII_ART = r"""
+                                                            ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀⣀⣀⢀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⡀⣀⣀⣀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀⡀
+                                                            ⠠⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠠⣦⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣅⠩⠖⠤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠠⠄⠆
+                                                            ⠠⠈⠀⠌⠀⠄⠠⠈⠠⠀⠄⠠⠁⠠⠀⠄⠠⠀⢄⣽⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣎⠠⠄⠠⠈⠀⠄⠠⠁⠠⠀⠄⠁⠄⠠⠀⠄⠨⠅
+                                                            ⠠⠁⠈⠀⠈⠀⠁⠀⠁⠠⠈⠀⠈⠀⠄⠀⠡⣪⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣍⢅⠈⠀⠈⠀⠈⠀⠁⠠⠈⠀⠄⠁⠠⠠⠅
+                                                            ⢀⡀⣀⢀⡀⣀⢀⡀⣀⠀⣀⠀⡀⢀⡀⢄⣵⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣆⢢⡀⡀⢀⡀⣀⠀⣀⠀⣀⠀⡀⢀⢀⡆
+                                                            ⢀⠀⠀⠀⠀⠀⠀⠀⠀⡀⠀⠀⢀⠀⢔⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣧⠑⡀⠀⠀⠀⡀⠀⢀⠀⢀⠀⠀⢂⡂
+                                                            ⠀⠂⠐⠐⠀⠒⠀⠒⠀⠐⠀⠂⢀⢎⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣧⠐⡀⠂⠐⠀⠂⠀⠂⠀⠂⠐⠀⡆
+                                                            ⠰⠠⠠⠄⠤⠀⠤⠀⠤⠀⠄⠄⢂⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣇⢢⠀⠄⠤⠠⠄⠤⠠⠀⠄⠢⠅
+                                                            ⠠⠀⠄⠠⠀⠄⠀⠄⠀⠠⠀⠰⣹⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⣿⡛⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄⠆⠀⠀⠄⠠⠀⠠⠀⠠⠠⠅
+                                                            ⠈⠀⠈⠀⠀⠈⠀⠈⠀⠁⢨⢡⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠁⠀⠀⠈⣿⡟⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⠈⠀⠁⠀⠀⠁⠀⠁⠀⠁⠇
+                                                            ⠐⡀⢀⠀⡀⢀⠀⡀⠀⢀⠂⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡏⠀⠀⠀⠀⢹⡇⢿⣿⣿⣿⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡆⠁⠀⠀⡀⢀⠀⡀⠀⡀⡆
+                                                            ⠐⠀⠂⠀⠐⠀⡀⠐⠀⠒⢰⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⠀⠀⢸⠀⢸⣿⣿⣿⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠃⠐⠀⠐⠀⡀⠐⠀⠒⡂
+                                                            ⠀⠐⠀⠐⠀⠀⠀⠀⠀⢲⣸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠇⠀⠀⠀⠀⢈⠀⢸⣿⣿⡟⠀⡿⠋⡿⢹⠿⣿⣿⣿⣿⠃⢿⠟⣿⡟⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣏⢰⠀⠀⠀⠀⠀⠀⠀⠐⠂
+                                                            ⠰⠠⠄⠤⠠⠄⠤⠠⠄⠃⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠙⡄⠀⣀⠀⠀⠠⠀⠘⠁⠙⠃⠀⠁⠀⠀⠀⣠⣤⣶⠶⠿⠶⠼⢤⣼⣁⣹⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠈⠀⠄⠄⠢⠄⠤⠀⠌⠇
+                                                            ⢀⠀⠀⠀⠀⠀⠀⠀⠀⠃⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠸⣿⣿⣿⣻⣇⡼⠼⠿⠿⠛⠛⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⠀⠀⠀⠀⠀⠀⠀⠀⠸⠃⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠘⡃
+                                                            ⠀⠂⠐⠀⠂⠐⠀⠂⠐⠀⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡠⢽⡿⠻⠃⠀⠀⢀⠀⠀⢀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠊⠀⢀⣠⣤⣤⣀⣀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠐⠀⠂⠐⠀⠂⠐⠆
+                                                            ⠠⠄⠄⠠⠀⠄⠠⠀⠄⠹⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡆⠀⠀⠀⢀⣠⣤⣦⡤⠤⢄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠟⠉⣾⣿⣿⣿⣛⡙⠲⣀⠀⠘⠛⣿⣿⣿⣿⣿⣿⣿⣿⡧⢠⠀⠄⠠⠀⠄⠠⠀⠌⠇
+                                                            ⠠⠈⠀⠄⠁⠠⠀⠄⠠⠁⠈⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⣠⠴⣻⣿⣿⣿⣽⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠛⠿⠿⠿⠿⠧⠄⠁⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⡇⠘⠀⠀⠄⠁⠀⠁⠀⠌⠅
+                                                            ⠀⠀⠁⠀⠈⠀⠀⠀⠀⠈⠀⢿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠇⠘⠡⠀⢿⡿⠿⠛⠋⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣧⡙⢿⣿⣿⣿⣿⣿⠁⠆⠀⠁⠈⠀⠁⠈⠀⠈⡅
+                                                            ⢐⠀⡀⢀⠀⡀⢀⠀⡀⢀⠃⠸⣿⣿⣿⣿⣿⣿⣿⣿⠃⠀⠀⠈⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣤⠙⣋⣴⣿⡿⠐⡂⢀⠀⡀⢀⠀⡀⢀⠀⡆
+                                                            ⢀⠂⠐⠀⠂⠐⠀⠂⠀⠒⠘⡀⢿⣿⣿⣿⢿⣿⣿⣿⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⣿⡿⢋⣴⡙⣿⣿⠇⠠⠐⠀⠂⠐⠀⠂⠐⠀⠒⡂
+                                                            ⠠⠀⠄⠠⠀⠄⠠⠀⠄⠠⠀⢣⠸⣿⣿⣿⣧⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣫⣶⣿⣿⣿⣾⡏⢀⠆⠀⠠⠀⠄⠠⠀⠄⠀⠄⠆
+                                                            ⠠⠄⠤⠀⠤⠀⠄⠄⠠⠀⠌⠤⠆⢻⣿⣿⣿⡿⣿⣯⣷⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠂⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⠀⠌⠠⠄⠤⠀⠤⠀⠤⠀⠄⠌⠇
+                                                            ⠈⠀⠀⠀⠀⠀⠈⠀⠀⠀⠈⠀⠄⠘⣿⣿⣿⣿⣿⣧⡿⣿⣧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣾⣿⣿⣿⣿⣿⣿⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠅
+                                                            ⠘⠀⠁⠈⠀⠁⠈⠀⠁⠈⠀⢈⠘⡀⢻⣿⣿⣿⣿⣿⣯⣼⣿⣧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠐⠒⠒⠀⠀⠈⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣼⣿⣿⣿⣿⣿⣿⣿⢰⠀⠈⠀⠁⠈⠀⠁⠈⠀⠁⡈⡃
+                                                            ⠐⢂⠂⠂⠒⠀⢂⠂⠐⠂⡐⠀⠂⣃⠸⡇⠹⣿⣿⣿⣿⣿⣿⣿⣿⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣾⣿⣿⣿⣿⣿⣿⡿⠃⢀⠀⢂⠐⡀⠒⠀⠒⢀⠂⠐⠐⡂
+                                                            ⠐⠀⠀⠐⠀⠀⠀⠀⠂⠀⠀⠀⠒⠘⢠⠒⢆⠸⣿⣿⣿⣿⣿⣿⣿⣿⣝⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⣿⣿⣿⣿⣿⣿⣿⣿⠀⠔⢂⠒⠀⠀⠀⠀⠂⠀⠀⠀⠐⠐⡂
+                                                            ⠠⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠈⡀⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣤⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣤⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⡧⢰⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠠⠅
+                                                            ⠠⠌⠠⠁⠌⠠⠁⠌⠠⠁⠌⠠⠁⠄⠈⠠⠁⠅⢺⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣠⣤⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠄⠠⠀⠌⠠⠁⠌⠠⠁⠌⠠⠁⠄⠁⠇
+                                                            ⠀⠈⠀⠈⠀⠀⠁⠀⠁⠀⠈⠀⠈⠀⠁⠀⠁⠀⠸⠈⣿⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣄⡀⠀⠀⠀⢀⣠⣤⣾⣿⡗⠈⢻⣿⣿⣿⣿⣿⡿⣿⣿⣿⣿⣿⣿⠀⠉⠀⠁⠈⠀⠈⠀⠁⠈⠀⠀⠁⠈⠈⠅
+                                                            ⠘⠐⠀⠂⠐⠀⠂⠐⠀⠂⠐⠀⠂⠐⠀⠂⠐⢒⡓⡆⢛⠈⠻⠈⢿⠟⢿⣿⣿⢿⣿⣿⡿⣿⣿⠿⣹⢿⣿⣿⣿⣿⣿⣿⣿⠟⠟⠀⠀⡾⠋⠈⠻⠋⠈⠀⣈⢹⣿⣿⣿⡇⢀⠃⠐⠀⠂⠐⠀⠂⠐⠀⠂⠐⠀⠂⡐⡃
+                                                            ⠐⢂⠐⢀⠂⡐⢀⠂⡐⢀⠂⡐⢀⠂⡐⠀⢂⠀⠐⠒⣐⣒⣀⣣⣀⣂⡀⠉⠛⡈⠉⢿⠇⠀⠀⠀⠉⠙⠻⠿⠿⠟⠛⠉⠀⠀⠀⠀⠀⠂⣔⣚⣂⢄⣛⠚⠐⣿⣿⣿⣿⠀⡈⠐⢀⠂⡐⠀⢂⠐⡀⠂⡐⠀⢂⠐⢀⡃
+                                                            ⢀⠀⡀⢀⠀⡀⢀⠀⡀⢀⠀⡀⢀⠀⡀⢀⠀⡀⢀⠀⠀⠀⠀⢀⠐⠐⣊⣂⣖⣳⠴⣸⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⢒⡀⠀⡀⠀⠀⣐⣿⣿⣿⡇⢠⠁⠀⡀⢀⠀⡀⢀⠀⡀⢀⠀⡀⢀⠀⡀⡆
+                                                            ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠁⠈⠀⠀⠀⠀⠀⠈⠀⢠⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢫⠄⠀⠀⠀⠁⢨⣿⣿⣿⠀⡌⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠠⠅
+                                                            ⠈⠁⠌⠠⠁⠌⠠⠁⠌⠠⠁⠈⠀⠁⠈⠄⠡⢈⣤⠥⠬⢤⠡⠄⠥⠬⠄⠡⠘⠋⠙⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠫⢍⠤⠅⠨⣽⣿⣿⡏⠰⠀⠠⠁⠌⠠⠁⠌⠠⠁⠌⠠⠁⠌⠀⠡⠠⠅
+                                                            ⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣤⠌⠒⠉⠁⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠑⠪⢁⣽⣿⣿⠁⠂⠀⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⡅
+                                                            ⠐⢀⠂⠐⠀⠂⠐⠀⡀⢂⣐⢾⣿⣿⡆⠀⠀⠀⠀⠀⠀⠀⡆⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⠗⠠⢍⡒⣀⢂⠀⠐⠀⠂⠐⠀⠂⠐⠀⠂⠐⠀⡐⡂
+                                                            ⢐⠀⡐⠀⢂⠐⠀⠂⣐⠖⠀⠀⠙⣏⡇⠀⠀⠀⠀⠀⠀⠀⠁⠀⢀⡀⠀⠠⠤⠄⠀⠐⠀⠀⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠤⠀⣀⡀⠀⠀⠀⠀⢠⣿⡟⠀⠀⠀⠀⠁⣶⣒⡒⠒⡀⠂⠐⡀⢂⠐⡀⠂⠐⣀⡃
+                                                            ⢀⠀⠀⠀⠀⠀⠀⡴⠁⠀⠀⠀⠀⣽⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠀⠀⠀⢸⣿⠃⠀⠀⠀⠀⠀⣳⠿⠿⣷⣤⡂⣀⠀⠀⠀⠀⠀⠀⠀⡆
+                                                            ⠈⠁⠁⠈⠀⠡⡹⠁⠀⠀⠀⠀⠀⣯⡇⠀⠀⠀⠀⠀⠀⠀⠘⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣾⠃⠀⠀⠀⠀⠀⠀⢸⢰⠀⠈⠙⠻⠮⡭⠅⠈⠁⠈⠀⠉⠅
+                                                            ⠨⠀⠄⠁⠄⡰⠁⠀⠀⠀⠀⠀⠀⣎⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠑⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⠏⠀⠀⠀⠀⠀⠀⠀⢸⣼⡀⠀⠀⠀⠀⠈⢯⠡⠄⠠⠁⠈⡅
+                                                            ⣸⠤⠀⡀⣀⠃⠀⠀⠀⠀⠀⠀⢀⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠑⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡠⠀⠀⠎⠀⠀⠀⠀⠀⠀⠀⠀⢸⡷⡄⠀⠀⠀⠀⠀⠀⠱⡀⠀⡀⢈⡆
+                                                            ⣼⣿⣷⣶⣿⣷⣶⣶⣶⣶⣶⣶⣾⣿⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣿⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣿⣶⣶⣾⣶⣶⣶⣶⣶⣶⣶⣶⣶⣾⣿⣷⣶⣶⣶⣶⣶⣶⣾⣷⣾⣶⣷⡖
+                                                            ⢼⣿⡟⠛⢻⣿⣿⣿⣿⣿⣿⡟⠛⠛⠛⠛⠛⠛⠛⢻⡟⠛⠛⠛⠛⠛⠛⠛⠛⣿⡿⠛⠛⠛⠛⠛⠛⠻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠟⠛⠛⠛⠛⠛⠛⣿⡟⠛⢻⣿⣿⣿⣿⣿⣿⣿⡿⠛⠛⣿⣿⣿⣿⣿⣿⣿⣿⡗
+                                                            ⢺⣿⡇⠀⢸⣿⣿⣿⣿⣿⣿⡇⠀⢀⣠⣀⣀⣀⣀⣸⣇⣀⣀⡀⠀⢀⣀⣀⣀⣿⠀⠀⣄⣀⣀⣀⡀⠀⢸⣿⣿⣿⣿⣿⣿⣿⠟⠁⠀⢀⣀⣀⡀⠀⠀⣿⡇⠀⢸⣿⣿⣿⣿⣿⣿⣿⡟⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣏
+                                                            ⣹⣿⡇⠀⢸⣿⣿⣿⣿⣿⣿⡇⠀⠘⠿⠿⠻⠿⠿⣿⣿⣿⣿⡇⠀⢸⣿⣿⣿⣿⠀⠀⠿⠻⠿⠻⠿⠾⣿⣿⣿⣿⣿⣿⣿⠅⠀⢀⣾⣿⣿⣿⡇⠀⠀⣿⡇⠀⢸⣿⣿⣿⣿⣿⣿⣿⣏⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⡧
+                                                            ⢼⣿⡇⠀⢸⣿⣿⣿⣿⣿⣿⡇⠀⢀⣀⣀⣀⣀⣀⣿⣿⣿⣿⡇⠀⢸⣿⣿⣿⣿⣄⣀⣀⣀⣀⣀⡀⠀⢸⣿⣿⣿⣿⣿⣿⠂⠀⠈⠉⠉⠉⠉⠁⠀⠀⣿⡇⠀⢸⣿⣿⣿⣿⣿⣿⣿⣏⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⡗
+                                                            ⢺⣿⡇⠀⠸⠿⠿⠿⠿⠿⣿⡇⠀⠸⠿⠿⠿⠿⠿⢿⣿⣿⣿⡇⠀⢸⣿⣿⣿⣿⠉⠉⠿⠿⠿⠿⠇⠀⢸⣿⣿⣿⣿⣿⣿⡁⠀⢰⣶⣶⣶⣶⡆⠀⠀⣿⡇⠀⠸⠿⠿⠿⠿⠿⠿⢿⣧⠀⠀⠿⠿⠿⠿⠿⠿⢿⣿⣏
+                                                            ⣹⣿⡇⡀⢀⢀⡀⢀⡀⢀⣼⡇⣀⠀⣀⠀⣀⠀⡀⣸⣿⣿⣿⣇⠀⣸⣿⣿⣿⣿⣄⡀⢀⡀⢀⡀⢀⣀⣼⣿⣿⣿⣿⣿⣿⡄⣀⣸⣿⣿⣿⣿⣇⢀⢀⣿⡇⣀⠀⣀⠀⣀⢀⡀⢀⣸⣷⢀⢀⠀⣀⢀⡀⡀⢀⢸⣿⡧
+                                                            ⢼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡗
+                                                            ⢺⣿⡇⢄⢻⣿⣿⣿⣿⣿⣿⡟⢠⠐⡄⢢⠐⡄⣈⢻⣿⡐⢸⣿⣿⣿⣿⡇⠄⣿⣟⠠⡐⢄⠢⡐⢄⡂⣽⣿⣿⣿⣿⣿⣿⡇⠀⢸⣿⣿⣿⣿⣿⣿⣿⡟⠁⠀⠀⠀⠀⠀⢸⣿⠀⠀⣿⡇⠀⠈⢻⣿⣿⣟⠀⢸⣿⣏
+                                                            ⣹⣿⡇⠌⣾⣿⣿⣿⣿⣿⣿⣇⠂⣿⣿⣿⣿⣿⢀⢻⣿⠌⢲⣿⣿⣿⣿⡇⢊⣿⣯⠐⣽⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡆⠀⢸⣿⣿⣿⣿⣿⣿⠏⠀⢀⣼⣿⣿⡇⠀⢸⣿⠀⠀⣿⡇⠀⠀⠀⠻⣿⣯⠀⢸⣿⡧
+                                                            ⢼⣿⡇⢊⣼⣿⣿⣿⣿⣿⣿⡇⠌⣿⣿⣿⣿⣿⢀⢻⣿⡘⢰⣿⣿⣿⣿⡇⢂⣿⡷⢈⠄⢂⠔⡠⠌⢸⣿⣿⣿⣿⣿⣿⣿⡆⠀⢸⣿⣿⣿⣿⣿⣿⠂⠀⠛⠛⠻⠛⠃⠀⢸⣿⠀⠀⣿⡇⠀⢸⡄⠀⠙⡷⠀⢸⣿⡗
+                                                            ⢺⣿⡇⠡⣾⣿⣿⣿⣿⣿⣿⡏⡐⣿⣿⣿⣿⣿⢀⢻⣿⡡⠌⠻⣿⣿⠟⡉⢄⣿⡿⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡆⠀⢸⣿⣿⣿⣿⣿⣿⡁⠀⣀⣀⣀⣀⡀⠀⢸⣿⠀⠀⣿⡇⠀⢸⣿⣆⠀⠈⠀⢸⣿⣏
+                                                            ⣹⣿⡇⠱⡈⢉⡉⡉⣉⠉⣿⣇⠰⢉⢉⡉⢉⠔⠂⣽⣿⣿⣦⡡⠌⡑⣈⣴⣿⣿⣟⠡⣈⠡⡉⢌⢉⡉⣽⣿⣿⣿⣿⣿⣿⡇⠀⠀⠀⠀⠀⠀⠀⣿⡁⠀⣿⣿⣿⣿⡇⠀⢸⣿⠀⠀⣿⡇⠀⢸⣿⣿⣧⡀⠀⢸⣿⡧
+                                                            ⢼⣿⣿⣶⣷⣷⣶⣷⣶⣾⣿⣿⣷⣾⣶⣾⣶⣾⣿⣿⣿⣿⣿⣷⣾⣶⣾⣿⣿⣿⣿⣶⣶⣷⣾⣶⣶⣶⣿⣿⣿⣿⣿⣿⣿⣷⣶⣶⣶⣶⣶⣶⣶⣿⣷⣶⣿⣿⣿⣿⣷⣶⣾⣿⣶⣶⣿⣷⣶⣾⣿⣿⣿⣷⣶⣾⣿⡗
+                                                            ⠘⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉
+"""
+
+class ChatApp(App):
+    CSS = """
+    Screen {
+        layout: vertical;
     }
-    
-    config_file = os.getenv("MCP_CONFIG", "mcp_config.json")
-    if os.path.exists(config_file):
-        try:
-            with open(config_file, 'r') as f:
-                mcp_config = json.load(f)
-                
-            for server_data in mcp_config.get("servers", []):
-                server = mcp_manager.MCPServerConfig(
-                    name=server_data["name"],
-                    command=server_data.get("command"),
-                    args=server_data.get("args"),
-                    env=server_data.get("env"),
-                    url=server_data.get("url"),
-                    transport=server_data.get("transport", "stdio"),
-                    description=server_data.get("description", "")
+    #layout
+    #main {
+        height: 1fr;
+    }
+    #messages {
+        border: round green;
+        height: 1fr;
+        padding: 1 1;
+        overflow: auto;
+    }
+    #sidebar {
+        border: round blue;
+        width: 36;
+        padding: 1 1;
+    }
+    #input {
+        height: 3;
+        border: round purple;
+    }
+    """
+
+    # Initialize application instance variables
+    def __init__(self, api_key: str, mcp_servers: list, max_context: int = 20, **kwargs):
+        super().__init__(**kwargs)
+        self.api_key = api_key
+        self.mcp_servers = mcp_servers
+        self.max_context = max_context
+        self._conversation_text = ""  # aggregated conversation text
+        self._sending_task = None
+        # flag to control assistant streaming label printing
+        self._assistant_streaming = False
+
+    # Compose the UI synchronously for Textual
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Horizontal(id="main"):
+            with Vertical():
+                # show ASCII_ART initially, replaced shortly after mount
+                yield ScrollableContainer(
+                    Static(ASCII_ART, id="messages_content"),
+                    id="messages",
                 )
-                config["mcp_servers"].append(server)
-                
-        except Exception as e:
-            logger.error(f"Failed to load MCP config: {e}")
-    
-    return config
+                yield Input(
+                    placeholder="Type a message and press Enter — commands: /help /quit /clear /tools /stats",
+                    id="input",
+                )
+            yield Static("Initializing tools...", id="sidebar")
+        yield Footer()
 
-async def show_help(console):
-    console.print("\nCommands:")
-    console.print("  /help     - Show this help")
-    console.print("  /clear    - Clear conversation history")
-    console.print("  [cyan]/tools    - Show available MCP tools")
-    console.print("  [cyan]/quit     - Exit the chatbot")
-    console.print("  /stats    - Show conversation statistics\n")
-
-async def show_tools(console):
-    tools = mcp_manager.get_available_tools()
-    if tools:
-        console.print("\n Available MCP Tools:")
-        for server_name, server_tools in tools.items():
-            console.print(f"\n {server_name}:")
-            for tool in server_tools:
-                desc = tool.description or 'No description'
-                console.print(f"    •{tool.name}: {desc}")
-    else:
-        console.print("[yellow]No MCP tools available.[/yellow]")
-    console.print()
-
-async def show_stats(console, available_tools):
-    stats = claude_bot.get_conversation_stats()
-    
-    console.print(f"\nConversation Statistics:")
-    console.print(f"  Total messages: {stats['total']}")
-    console.print(f"  User messages: {stats['user']}")
-    console.print(f"  Assistant messages: {stats['assistant']}")
-    console.print(f"  Context window: {stats['context_window']} messages")
-    console.print(f"  MCP servers: {len(available_tools)}\n")
-
-async def main():
-    console = Console()
-    
-    config = load_config()
-    
-    if not config["api_key"]:
-        console.print("Please set ANTHROPIC_API_KEY environment variable")
-        sys.exit(1)
-    
-    console.print(Panel.fit(
-        "Claude Terminal with LainBOT\n",
-        title="Claude Chatbot",
-        border_style="blue"
-    ))
-    
-    await show_help(console)
-    
-    try:
-        with console.status("Initializing chatbot and MCP servers..."):
+    # Initialize bot and UI elements
+    async def on_mount(self) -> None:
+        try:
             await claude_bot.initialize(
-                api_key=config["api_key"],
-                mcp_servers=config["mcp_servers"],
-                max_context=config["max_context_messages"]
+                api_key=self.api_key, mcp_servers=self.mcp_servers, max_context=self.max_context
             )
-        
-        available_tools = mcp_manager.get_available_tools()
-        if available_tools:
-            total_tools = sum(len(tools) for tools in available_tools.values())
-            console.print(f"\nConnected to {len(available_tools)} MCP server(s) with  {total_tools} total tools:")
-            for server_name, tools in available_tools.items():
-                console.print(f"  • {server_name}: {len(tools)} tools")
-        else:
-            console.print("\nNo MCP servers configured or available")
-        
-        console.print("\n[green]Ready! Type your message and press Enter. Use /quit to exit.[/green]\n")
-        
-        while True:
+        except Exception as e:
+            logger.exception("claude_bot.initialize() failed")
             try:
-                user_input = console.input("[bold green]You:[/bold green] ").strip()
-                
-                if not user_input:
-                    continue
-                
-                if user_input.startswith('/'):
-                    command = user_input.lower()
-                    
-                    if command == '/quit':
-                        break
-                    elif command == '/help':
-                        await show_help(console)
-                        continue
-                    elif command == '/clear':
-                        claude_bot.clear_history()
-                        await claude_bot.save_session()
-                        console.print("Conversation history cleared.\n")
-                        continue
-                    elif command == '/tools':
-                        await show_tools(console)
-                        continue
-                    elif command == '/stats':
-                        await show_stats(console, available_tools)
-                        continue
-                    else:
-                        console.print(f"Unknown command: {user_input}")
-                        continue
-                
-                console.print("Claude: ", end="")
-                
-                async for chunk in claude_bot.send_message_stream(user_input):
-                    console.print(chunk, end="", highlight=False)
-                
-                console.print()
-                console.print()
-                
-            except KeyboardInterrupt:
-                console.print("\n\n Goodbye!")
-                break
-            except Exception as e:
-                logger.error(f"Error in chat loop: {e}")
-                console.print(f"Error: {e}\n")
-    
-    finally:
-        with console.status("Cleaning up..."):
+                sidebar = self.query_one("#sidebar", Static)
+                sidebar.update(f"Error initializing tools: {e}")
+            except Exception:
+                pass
+
+        try:
+            await self._refresh_sidebar()
+        except Exception:
+            logger.exception("Error refreshing sidebar")
+
+        # focus input widget (focus() is synchronous / not awaitable)
+        try:
+            input_widget = self.query_one("#input", Input)
+            if input_widget is not None:
+                input_widget.focus()
+            else:
+                logger.warning("Input widget not found to focus()")
+        except Exception:
+            logger.exception("Failed to focus the input widget")
+
+        # remove the startup ASCII after 1 second
+        try:
+            # schedules callback which launches an async task
+            self.set_timer(3.0, lambda: asyncio.create_task(self._remove_startup_art_async()))
+        except Exception:
+            # fallback if set_timer not present
+            asyncio.create_task(self._remove_startup_art_fallback())
+
+    # Update the sidebar with available MCP tools
+    async def _refresh_sidebar(self) -> None:
+        sidebar = self.query_one("#sidebar", Static)
+        tools = mcp_manager.get_available_tools()
+        lines = []
+        if tools:
+            for server_name, server_tools in tools.items():
+                lines.append(f"[b]{server_name}[/b]")
+                for t in server_tools:
+                    desc = getattr(t, "description", "")
+                    lines.append(f" • {t.name} - {desc}")
+        else:
+            lines.append("No MCP tools available")
+        sidebar.update("\n".join(lines))
+
+    # Append a message to the conversation view, then scroll
+    async def append_message(self, chunk: str, role: str = "assistant") -> None:
+        if role == "user":
+            # user message formatting
+            self._conversation_text += f"\n[bold green]You:[/bold green] {chunk}\n"
+            # if user sends a message, ensure assistant streaming flag reset
+            self._assistant_streaming = False
+        else:
+            # assistant (LainBot) streaming handling:
+            label = "\n[bold cyan]LainBot:[/bold cyan] "
+            if not self._assistant_streaming:
+                # first assistant chunk: prepend label
+                self._conversation_text += f"{label}{chunk}"
+                self._assistant_streaming = True
+            else:
+                # subsequent chunks during streaming: append directly
+                self._conversation_text += chunk
+
+        # update UI elements and scroll to end (scroll_end may be awaitable)
+        messages_container = self.query_one("#messages", ScrollableContainer)
+        inner = self.query_one("#messages_content", Static)
+        inner.update(self._conversation_text)
+        try:
+            await messages_container.scroll_end(animate=False)
+        except Exception:
+            logger.debug("scroll_end failed or not awaitable; ignoring")
+
+    # Send a message and stream assistant response
+    async def handle_send(self, message: str) -> None:
+        try:
+            # show user message immediately
+            await self.append_message(message, role="user")
+            # stream assistant response
+            async for chunk in claude_bot.send_message_stream(message):
+                await self.append_message(chunk, role="assistant")
+            # streaming finished: reset streaming flag and finalize formatting
+            self._assistant_streaming = False
+            # optionally save session
+            try:
+                await claude_bot.save_session()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.exception("Error while sending message")
+            await self.append_message(f"\n[red]Error: {e}[/red]\n")
+
+    # Show help text to the user
+    async def action_show_help(self) -> None:
+        await self.append_message(
+            "/help: show help. /quit: exit. /clear: clear history. /tools: show MCP tools. /stats: show stats\n",
+            role="assistant",
+        )
+
+    # Refresh tools list and notify user
+    async def action_show_tools(self) -> None:
+        await self._refresh_sidebar()
+        await self.append_message("(Updated MCP tools list on the right)\n", role="assistant")
+
+    # Show conversation and context stats
+    async def action_show_stats(self) -> None:
+        stats = claude_bot.get_conversation_stats()
+        text = (
+            f"Total messages: {stats['total']}\n"
+            f"User messages: {stats['user']}\n"
+            f"Assistant messages: {stats['assistant']}\n"
+            f"Context window: {stats['context_window']} messages\n"
+        )
+        await self.append_message(text, role="assistant")
+
+    # Clear conversation history and UI
+    async def action_clear(self) -> None:
+        claude_bot.clear_history()
+        try:
+            await claude_bot.save_session()
+        except Exception:
+            pass
+        self._conversation_text = ""
+        inner = self.query_one("#messages_content", Static)
+        inner.update(self._conversation_text)
+        self._assistant_streaming = False
+
+    # Handle input submitted events
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        text = event.value.strip()
+        # clear the input box
+        event.input.value = ""
+        if not text:
+            return
+
+        if text.startswith("/"):
+            cmd = text.lower()
+            if cmd == "/quit":
+                await self.action_quit()
+            elif cmd == "/help":
+                await self.action_show_help()
+            elif cmd == "/clear":
+                await self.action_clear()
+            elif cmd == "/tools":
+                await self.action_show_tools()
+            elif cmd == "/stats":
+                await self.action_show_stats()
+            else:
+                await self.append_message(f"Unknown command: {text}\n", role="assistant")
+            return
+
+        # start send task 
+        asyncio.create_task(self.handle_send(text))
+
+    # Cleanup resources on shutdown
+    async def on_shutdown_request(self) -> None:
+        try:
             await claude_bot.cleanup()
+        except Exception:
+            pass
+
+    # Remove startup ASCII art and show conversation
+    async def _remove_startup_art_async(self) -> None:
+        try:
+            inner = self.query_one("#messages_content", Static)
+            inner.update(self._conversation_text)
+            try:
+                messages_container = self.query_one("#messages", ScrollableContainer)
+                await messages_container.scroll_end(animate=False)
+            except Exception:
+                logger.debug("scroll_end failed or not awaitable; ignoring")
+        except Exception:
+            logger.exception("Failed to remove startup ASCII art")
+
+    # Fallback removal if timers are unavailable
+    async def _remove_startup_art_fallback(self) -> None:
+        await asyncio.sleep(1.0)
+        await self._remove_startup_art_async()
+
+
+# Parse env, build config, and start app
+def main():
+    api_key = os.getenv("Anthropic_API_key")
+    if not api_key:
+        print("Please set an anthropic api key")
+        raise SystemExit(1)
+
+    # load MCP config if present
+    config_file = os.getenv("MCP_CONFIG", "mcp_config.json")
+    mcp_servers = []
+    if Path(config_file).exists():
+        import json
+
+        with open(config_file, "r") as f:
+            cfg = json.load(f)
+        for s in cfg.get("servers", []):
+            mcp_servers.append(
+                mcp_manager.MCPServerConfig(
+                    name=s.get("name"),
+                    command=s.get("command"),
+                    args=s.get("args"),
+                    env=s.get("env"),
+                    url=s.get("url"),
+                    transport=s.get("transport", "stdio"),
+                    description=s.get("description", ""),
+                )
+            )
+
+    app = ChatApp(
+        api_key=api_key, mcp_servers=mcp_servers, max_context=int(os.getenv("MAX_CONTEXT_MESSAGES", "20"))
+    )
+    app.run()
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
+

@@ -1,7 +1,6 @@
 .env
 session.json
 uv.lock
-pyproject.toml
 holaYass.txt
 chat_session.json
 __pycache__
