@@ -2,7 +2,7 @@
   "servers": [
     {
       "name": "git",
-      "transport": "stdio", 
+      "transport": "stdio",
       "command": "uvx",
       "args": ["mcp-server-git", "--repository", "./"],
       "description": "Git operations server"
@@ -12,6 +12,19 @@
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/gustavo/Progra/Redes_proyecto_client"],
       "description": "File system operations server"
-    }
+    },
+    {
+      "name": "moon",
+      "transport": "streamable-http",
+      "url": "https://p01--mcpmoonservice--wyrdcdk6ht2t.code.run",
+      "description": "Moon phase MCP server (SSE)"
+    },
+	{
+  	  "name": "mcp-estadistico",
+  	  "transport": "streamable-http",
+  	  "url": "http://127.0.0.1:8080/mcp",
+  	  "description": "Servidor MCP estadístico local"
+	}
   ]
 }
+
