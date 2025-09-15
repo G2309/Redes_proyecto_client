@@ -13,9 +13,9 @@ import mcp_manager
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-3-haiku-20240307"
+#MODEL = "claude-3-haiku-20240307"
 # I'll use this during presentation
-#MODEL = "claude-sonnet-4-20250514"
+MODEL = "claude-sonnet-4-20250514"
 MAX_TOKENS = 1000
 
 @dataclass
