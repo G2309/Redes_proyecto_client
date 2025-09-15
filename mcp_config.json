@@ -16,7 +16,7 @@
     {
       "name": "moon",
       "transport": "streamable-http",
-      "url": "https://p01--mcpmoonservice--wyrdcdk6ht2t.code.run",
+      "url": "https://p01--mcpmoonservice--wyrdcdk6ht2t.code.run/mcp",
       "description": "Moon phase MCP server (SSE)"
     },
 	{

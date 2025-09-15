@@ -157,8 +157,9 @@ def get_all_tools_for_anthropic() -> List[Dict[str, Any]]:
     anthropic_tools = []
     for server_name, tools in available_tools.items():
         for tool in tools:
+            safe_tool_name = tool.name.replace(".", "_")
             anthropic_tools.append({
-                "name": f"{server_name}__{tool.name}",
+                "name": f"{server_name}__{safe_tool_name}",
                 "description": f"[{server_name}] {tool.description or tool.name}",
                 "input_schema": getattr(tool, "inputSchema", None) or {"type":"object","properties":{},"required":[]}
             })
