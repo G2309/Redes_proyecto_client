@@ -187,8 +187,19 @@ class ChatApp(App):
                 id="sidebar",
             )
         yield Footer()
+    async def _start_mcp(self) -> None:
+        try:
+            await claude_bot.initialize(
+                api_key=self.api_key, mcp_servers=self.mcp_servers, max_context=self.max_context
+            )
+            await self._refresh_sidebar()
+        except Exception as e:
+            ...
+        # quitar ASCII después de conectar
+        await self._remove_startup_art_async()
     
     async def on_mount(self) -> None:
+        self.set_timer(3.0, lambda: asyncio.create_task(self._start_mcp()))
         try:
             await claude_bot.initialize(
                 api_key=self.api_key, mcp_servers=self.mcp_servers, max_context=self.max_context
