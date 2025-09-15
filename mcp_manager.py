@@ -154,17 +154,102 @@ async def call_tool(server_name: str, tool_name: str, arguments: Dict[str, Any])
 
 
 def get_all_tools_for_anthropic() -> List[Dict[str, Any]]:
+    schemas_override = {
+        "upload_excel": {
+            "type": "object",
+            "properties": {
+                "file_bytes": {"type": "string", "description": "Archivo Excel en base64"},
+                "filename": {"type": "string", "description": "Nombre del archivo"},
+            },
+            "required": ["file_bytes", "filename"]
+        },
+        "list_datasets": {"type": "object", "properties": {}, "required": []},
+        "describe": {
+            "type": "object",
+            "properties": {
+                "dataset_id": {"type": "string", "description": "ID del dataset a describir"},
+                "sheet_name": {"type": "string", "description": "Nombre de la hoja (opcional)"}
+            },
+            "required": ["dataset_id"]
+        },
+        "proportion": {
+            "type": "object",
+            "properties": {
+                "dataset_id": {"type": "string"},
+                "sheet_name": {"type": "string"},
+                "numerator_filter": {"type": "string"},
+                "denominator_filter": {"type": "string"}
+            },
+            "required": ["dataset_id", "sheet_name", "numerator_filter", "denominator_filter"]
+        },
+        "odds_ratio_rr": {
+            "type": "object",
+            "properties": {
+                "dataset_id": {"type": "string"},
+                "sheet_name": {"type": "string"},
+                "exposure_col": {"type": "string"},
+                "outcome_col": {"type": "string"},
+                "exposure_val": {"type": "string"},
+                "outcome_val": {"type": "string"}
+            },
+            "required": ["dataset_id", "sheet_name", "exposure_col", "outcome_col", "exposure_val", "outcome_val"]
+        },
+        "chi_square": {
+            "type": "object",
+            "properties": {
+                "dataset_id": {"type": "string"},
+                "sheet_name": {"type": "string"},
+                "col1": {"type": "string"},
+                "col2": {"type": "string"},
+                "correction": {"type": "boolean"}
+            },
+            "required": ["dataset_id", "sheet_name", "col1", "col2"]
+        },
+        "ttest": {
+            "type": "object",
+            "properties": {
+                "dataset_id": {"type": "string"},
+                "sheet_name": {"type": "string"},
+                "group_col": {"type": "string"},
+                "value_col": {"type": "string"},
+                "group1": {"type": "string"},
+                "group2": {"type": "string"}
+            },
+            "required": ["dataset_id", "sheet_name", "group_col", "value_col", "group1", "group2"]
+        },
+        "plot": {
+            "type": "object",
+            "properties": {
+                "dataset_id": {"type": "string"},
+                "sheet_name": {"type": "string"},
+                "kind": {"type": "string", "description": "Tipo de gráfico: hist, scatter, etc."},
+                "x": {"type": "string"},
+                "y": {"type": "string"},
+                "options": {"type": "object"}
+            },
+            "required": ["dataset_id", "sheet_name", "kind"]
+        },
+        "debug_info": {"type": "object", "properties": {}, "required": []}
+    }
+
     anthropic_tools = []
     for server_name, tools in available_tools.items():
         for tool in tools:
             safe_tool_name = tool.name.replace(".", "_")
+            # OJO: el override se busca por el nombre original de la tool
+            schema = schemas_override.get(tool.name) or getattr(tool, "inputSchema", None) or {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
             anthropic_tools.append({
                 "name": f"{server_name}__{safe_tool_name}",
                 "description": f"[{server_name}] {tool.description or tool.name}",
-                "input_schema": getattr(tool, "inputSchema", None) or {"type":"object","properties":{},"required":[]}
+                "input_schema": schema
             })
-    return anthropic_tools
 
+    logger.info("Tools expuestas a Anthropic: %s", anthropic_tools)
+    return anthropic_tools
 
 def get_available_tools():
     return available_tools.copy()
