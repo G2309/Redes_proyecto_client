@@ -79,4 +79,31 @@ Also, originally the plan was to use ChatGPT as LLM, but the API key had expired
 * Handling try catch is easier in Python compared to Julia
 * Interoperability between tools and chatbots is possible with a clear protocol definition
 
+Aquí tienes un texto en inglés en formato Markdown para que lo pongas al final de tu README bajo una sección “Network analysis with Wireshark”. Lo redacté en un estilo técnico pero entendible para tu reporte:
+
+---
+
+## Network analysis with Wireshark
+
+To analyze the communication between the chatbot (host) and the remote MCP server, a packet capture was recorded using tcpdump and inspected with Wireshark. The capture was saved in `.pcapng` format to preserve all metadata.
+
+### Synchronization messages
+
+At the beginning of the session, several JSON-RPC messages appear related to synchronization. These include `initialize` and `list_tools`. They allow the client to inform the server of its capabilities and request the list of available tools. In Wireshark, these appear as HTTP POST requests to `/mcp` with JSON bodies containing `"method": "initialize"` or `"method": "list_tools"`. They are essential to establish the initial state of the session.
+
+### Request messages
+
+After synchronization, the chatbot issues explicit requests to call tools. These are JSON-RPC requests where the `"method"` field contains values like `"call_tool"`, together with the arguments of the specific tool (for example a dataset ID, or a query to compute). In Wireshark, these can be identified as outgoing POST messages with `"id"` fields, marking them as client requests awaiting responses.
+
+### Response messages
+
+Each request is followed by a JSON-RPC response from the server, which includes a `"result"` or an `"error"` field and the same `"id"` used in the request. These confirm whether the tool invocation was successful or failed. In Wireshark they appear as server-to-client HTTP responses, and the pairing between request and response can be verified using the `"id"` field.
+
+### Layer mapping
+
+* Data link layer: Ethernet frames carrying the IP packets inside the local network.
+* Network layer: IPv4 with the source address of the client (host machine) and the destination address of the remote MCP server.
+* Transport layer: TCP segments encapsulating the communication, typically using port 443 (HTTPS) or port 8080 if configured.
+* Application layer: HTTP requests and responses with JSON-RPC payloads. This is where the MCP protocol is implemented.
+
 
