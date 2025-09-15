@@ -76,7 +76,6 @@ ASCII_ART = r"""
                                                                 ⢼⣿⣿⣶⣷⣷⣶⣷⣶⣾⣿⣿⣷⣾⣶⣾⣶⣾⣿⣿⣿⣿⣿⣷⣾⣶⣾⣿⣿⣿⣿⣶⣶⣷⣾⣶⣶⣶⣿⣿⣿⣿⣿⣿⣿⣷⣶⣶⣶⣶⣶⣶⣶⣿⣷⣶⣿⣿⣿⣿⣷⣶⣾⣿⣶⣶⣿⣷⣶⣾⣿⣿⣿⣷⣶⣾⣿⡗
                                                                 ⠘⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉⠋⠙⠉
 """
-
 # Catppuccin colors from: https://catppuccin.com/palette/  
 # catppuccin macchiato
 MAUVE = "#c6a0f6"
@@ -90,7 +89,6 @@ RED = "#ed8796"
 
 
 class ChatApp(App):
-    # App CSS using your Catppuccin palette
     CSS = f"""
     Screen {{
         background: {MANTLE};
@@ -156,25 +154,22 @@ class ChatApp(App):
         color: {TEXT};
     }}
 
-    /* small helper for error text */
     .error {{
         color: {RED};
         text-style: bold;
     }}
     """
 
-    # Initialize application instance variables
     def __init__(self, api_key: str, mcp_servers: list, max_context: int = 20, **kwargs):
         super().__init__(**kwargs)
         self.api_key = api_key
         self.mcp_servers = mcp_servers
         self.max_context = max_context
-        self._conversation_text = ""  # aggregated conversation text
+        self._conversation_text = ""  
         self._sending_task = None
-        # flag to control assistant streaming label printing
         self._assistant_streaming = False
+        self._ascii_visible = True  
 
-    # Compose the UI synchronously for Textual
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="main"):
@@ -187,14 +182,12 @@ class ChatApp(App):
                     placeholder="Type a message and press Enter — commands: /help /quit /clear /tools /stats",
                     id="input",
                 )
-            # Sidebar ahora es un ScrollableContainer con Static interno
             yield ScrollableContainer(
                 Static("Initializing tools...", id="sidebar_content"),
                 id="sidebar",
             )
         yield Footer()
     
-    # Initialize bot and UI elements
     async def on_mount(self) -> None:
         try:
             await claude_bot.initialize(
@@ -213,39 +206,28 @@ class ChatApp(App):
         except Exception:
             logger.exception("Error refreshing sidebar")
 
-        # focus input widget (focus() is synchronous / not awaitable)
         try:
             input_widget = self.query_one("#input", Input)
             if input_widget is not None:
                 input_widget.focus()
-            else:
-                logger.warning("Input widget not found to focus()")
         except Exception:
             logger.exception("Failed to focus the input widget")
 
-        # remove the startup ASCII after n seconds
-        try:
-            # schedules callback which launches an async task
-            self.set_timer(3.0, lambda: asyncio.create_task(self._remove_startup_art_async()))
-        except Exception:
-            # fallback if set_timer not present
-            asyncio.create_task(self._remove_startup_art_fallback())
+        self.set_timer(3.0, lambda: asyncio.create_task(self._remove_startup_art_async()))
 
-
-    # Update the sidebar with available MCP tools
     async def _refresh_sidebar(self) -> None:
         sidebar = self.query_one("#sidebar", ScrollableContainer)
         try:
             content = sidebar.query_one("#sidebar_content", Static)
         except Exception:
-            # fallback: si no existe, crea/obtén el Static directamente
             content = self.query_one("#sidebar_content", Static)
     
         tools = mcp_manager.get_available_tools()
         lines = []
         if tools:
-            for server_name, server_tools in tools.items():
-                lines.append(f"[b]{server_name}[/b]")
+            for i, (server_name, server_tools) in enumerate(tools.items()):
+                color = [MAUVE, SKY, YELLOW, BLUE][i % 4]
+                lines.append(f"[{color}]{server_name}[/{color}]")
                 for t in server_tools:
                     desc = getattr(t, "description", "")
                     name = getattr(t, "name", getattr(t, "id", str(t)))
@@ -254,51 +236,40 @@ class ChatApp(App):
             lines.append("No MCP tools available")
         content.update("\n".join(lines))
     
-        # intenta desplazar al final para que el usuario vea lo último
         try:
             await sidebar.scroll_end(animate=False)
         except Exception:
-            # algunos backends/textual versions pueden no soportar scroll_end asíncrono
-            logger.debug("sidebar.scroll_end no está disponible; ignorando")
+            pass
 
-    # Append a message to the conversation view, then scroll
     async def append_message(self, chunk: str, role: str = "assistant") -> None:
+        inner = self.query_one("#messages_content", Static)
+        if self._ascii_visible:
+            inner.update("")
+            self._ascii_visible = False
+
         if role == "user":
-            # user message formatting
-            self._conversation_text += f"\n[bold green]You:[/bold green] {chunk}\n"
-            # if user sends a message, ensure assistant streaming flag reset
+            self._conversation_text += f"\n[left][bold green]You:[/bold green] {chunk}[/left]\n"
             self._assistant_streaming = False
         else:
-            # assistant (LainBot) streaming handling:
-            label = "\n[bold cyan]LainBot:[/bold cyan] "
             if not self._assistant_streaming:
-                # first assistant chunk: prepend label
-                self._conversation_text += f"{label}{chunk}"
+                self._conversation_text += f"\n[right][bold cyan]LainBot:[/bold cyan] {chunk}[/right]"
                 self._assistant_streaming = True
             else:
-                # subsequent chunks during streaming: append directly
                 self._conversation_text += chunk
 
-        # update UI elements and scroll to end (scroll_end may be awaitable)
         messages_container = self.query_one("#messages", ScrollableContainer)
-        inner = self.query_one("#messages_content", Static)
         inner.update(self._conversation_text)
         try:
             await messages_container.scroll_end(animate=False)
         except Exception:
-            logger.debug("scroll_end failed or not awaitable; ignoring")
+            pass
 
-    # Send a message and stream assistant response
     async def handle_send(self, message: str) -> None:
         try:
-            # show user message immediately
             await self.append_message(message, role="user")
-            # stream assistant response
             async for chunk in claude_bot.send_message_stream(message):
                 await self.append_message(chunk, role="assistant")
-            # streaming finished: reset streaming flag and finalize formatting
             self._assistant_streaming = False
-            # optionally save session
             try:
                 await claude_bot.save_session()
             except Exception:
@@ -307,19 +278,16 @@ class ChatApp(App):
             logger.exception("Error while sending message")
             await self.append_message(f"\n[red]Error: {e}[/red]\n")
 
-    # Show help text to the user
     async def action_show_help(self) -> None:
         await self.append_message(
             "/help: show help. /quit: exit. /clear: clear history. /tools: show MCP tools. /stats: show stats\n",
             role="assistant",
         )
 
-    # Refresh tools list and notify user
     async def action_show_tools(self) -> None:
         await self._refresh_sidebar()
         await self.append_message("(Updated MCP tools list on the right)\n", role="assistant")
 
-    # Show conversation and context stats
     async def action_show_stats(self) -> None:
         stats = claude_bot.get_conversation_stats()
         text = (
@@ -330,7 +298,6 @@ class ChatApp(App):
         )
         await self.append_message(text, role="assistant")
 
-    # Clear conversation history and UI
     async def action_clear(self) -> None:
         claude_bot.clear_history()
         try:
@@ -342,10 +309,8 @@ class ChatApp(App):
         inner.update(self._conversation_text)
         self._assistant_streaming = False
 
-    # Handle input submitted events
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
-        # clear the input box
         event.input.value = ""
         if not text:
             return
@@ -366,30 +331,24 @@ class ChatApp(App):
                 await self.append_message(f"Unknown command: {text}\n", role="assistant")
             return
 
-        # start send task 
         asyncio.create_task(self.handle_send(text))
 
-    # Cleanup resources on shutdown
     async def on_shutdown_request(self) -> None:
         try:
             await claude_bot.cleanup()
         except Exception:
             pass
 
-    # Remove startup ASCII art and show conversation
     async def _remove_startup_art_async(self) -> None:
+        inner = self.query_one("#messages_content", Static)
+        inner.update(self._conversation_text)
+        self._ascii_visible = False
         try:
-            inner = self.query_one("#messages_content", Static)
-            inner.update(self._conversation_text)
-            try:
-                messages_container = self.query_one("#messages", ScrollableContainer)
-                await messages_container.scroll_end(animate=False)
-            except Exception:
-                logger.debug("scroll_end failed or not awaitable; ignoring")
+            messages_container = self.query_one("#messages", ScrollableContainer)
+            await messages_container.scroll_end(animate=False)
         except Exception:
-            logger.exception("Failed to remove startup ASCII art")
+            pass
 
-    # Fallback removal if timers are unavailable
     async def _remove_startup_art_fallback(self) -> None:
         await asyncio.sleep(3.0)
         await self._remove_startup_art_async()
@@ -402,12 +361,10 @@ def main():
         print("Please set an anthropic api key")
         raise SystemExit(1)
 
-    # load MCP config if present
     config_file = os.getenv("MCP_CONFIG", "mcp_config.json")
     mcp_servers = []
     if Path(config_file).exists():
         import json
-
         with open(config_file, "r") as f:
             cfg = json.load(f)
         for s in cfg.get("servers", []):
@@ -424,7 +381,9 @@ def main():
             )
 
     app = ChatApp(
-        api_key=api_key, mcp_servers=mcp_servers, max_context=int(os.getenv("MAX_CONTEXT_MESSAGES", "20"))
+        api_key=api_key,
+        mcp_servers=mcp_servers,
+        max_context=int(os.getenv("MAX_CONTEXT_MESSAGES", "20"))
     )
     app.run()
 
